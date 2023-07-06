@@ -8,23 +8,21 @@ module dma (
     output wire [31:0] dma_rdata_i,
 
     //master0 init0
-    output wire        READ,
     output reg  [ 3:0] CS_R,
     output reg  [ 3:0] WEN_R,
     output reg  [31:0] HADDR_R,
     input  wire [31:0] HRDATA_R,
 
     //master1 init1
-    output wire        WRITE,
-    output reg  [ 3:0] CS_W,
-    output reg  [ 3:0] WEN_W,
-    output reg  [31:0] HADDR_W,
-    output wire [31:0] HWDATA_W
+    output reg [ 3:0] CS_W,
+    output reg [ 3:0] WEN_W,
+    output reg [31:0] HADDR_W,
+    output reg [31:0] HWDATA_W
 );
 
-  localparam STATE_IDLE = 3'd1;
-  localparam STATE_READ = 3'd2;
-  localparam STATE_WRITE = 3'd4;
+  localparam STATE_IDLE = 2'd0;
+  localparam STATE_READ = 2'd1;
+  localparam STATE_WRITE = 2'd2;
 
   //DMA reg
   reg [31:0] reg_rd_addr;
@@ -50,7 +48,7 @@ module dma (
   always @(posedge clk_i or negedge rst_i) begin
     if (!rst_i) reg_wr_addr <= 32'h00000000;
     else begin
-      if (dma_write_i & (dma_addr_i == 12'h001)) reg_wr_addr <= dma_wdata_i;
+      if (dma_write_i & (dma_addr_i == 12'h004)) reg_wr_addr <= dma_wdata_i;
       else reg_wr_addr <= reg_wr_addr;
     end
   end
@@ -58,7 +56,7 @@ module dma (
   always @(posedge clk_i or negedge rst_i) begin
     if (!rst_i) reg_length <= 32'h00000000;
     begin
-      if (dma_write_i & (dma_addr_i == 12'h002)) reg_length <= dma_wdata_i;
+      if (dma_write_i & (dma_addr_i == 12'h008)) reg_length <= dma_wdata_i;
       else reg_length <= reg_length;
     end
   end
@@ -66,7 +64,7 @@ module dma (
   always @(posedge clk_i or negedge rst_i) begin
     if (!rst_i) reg_step <= 32'h00000000;
     else begin
-      if (dma_write_i & (dma_addr_i == 12'h003)) reg_step <= dma_wdata_i;
+      if (dma_write_i & (dma_addr_i == 12'h00C)) reg_step <= dma_wdata_i;
       else reg_step <= reg_step;
     end
   end
@@ -74,19 +72,13 @@ module dma (
   always @(posedge clk_i or negedge rst_i) begin
     if (!rst_i) reg_ctrl <= 32'h00000000;
     else begin
-      if (dma_write_i & (dma_addr_i == 12'h04)) reg_ctrl <= dma_wdata_i;
+      if (dma_write_i & (dma_addr_i == 12'h010)) reg_ctrl <= dma_wdata_i;
       else reg_ctrl <= reg_ctrl_nxt;
     end
   end
 
   assign reg_ctrl_nxt = {reg_ctrl[31:1], 1'b0};
 
-
-  reg valid_w;
-  reg valid_r;
-  reg [31:0] fifo_data_i;
-  wire [31:0] fifo_data_o;
-  wire accept_o, valid_o;
 
   //fifo in dma
   dbg_bridge_fifo #(
@@ -99,7 +91,7 @@ module dma (
 
       // In
       .push_i(valid_w),
-      .data_in_i(HRDATA_R),
+      .data_in_i(fifo_data_i),
       .accept_o(accept_o),
 
       // Out
@@ -109,23 +101,7 @@ module dma (
   );
 
 
-  reg [2:0] state_q, next_state_r;
-
-  //fifo count , when dma start ,read and write needs 8 clk(max)
-  reg [2:0] fifo_count;
-  reg [2:0] fifo_count_next;
-  wire fifo_count_done = (fifo_count == 3'b111);
-  always @* begin
-    if (fifo_count_done) fifo_count_next = 3'b000;
-    else if (state_q[0]) fifo_count_next = 3'b000;
-    else if ((state_q[1] | state_q[2]) && dma_count_rd != 32'h00000000)
-      fifo_count_next = fifo_count + 1;
-    else fifo_count_next = fifo_count;
-  end
-  always @(posedge clk_i or negedge rst_i)
-    if (!rst_i) fifo_count <= 3'b000;
-    else fifo_count <= fifo_count_next;
-
+  reg [1:0] state_q, next_state_r;
 
   always @* begin
     case (state_q)
@@ -134,13 +110,8 @@ module dma (
         else next_state_r = STATE_IDLE;
       end
       STATE_READ: begin
-        if (fifo_count_done | dma_count_rd == 32'h00000000) next_state_r = STATE_WRITE;
-        else next_state_r = STATE_READ;
       end
       STATE_WRITE: begin
-        if (fifo_count_done & dma_count_wr != 32'h00000000) next_state_r = STATE_READ;
-        else if (dma_count_wr == 32'h00000000) next_state_r = STATE_IDLE;
-        else next_state_r = STATE_WRITE;
       end
     endcase
   end
@@ -162,22 +133,18 @@ module dma (
 
   always @(posedge clk_i or negedge rst_i) begin
     if (~rst_i) begin
-      valid_w <= 1'b0;
       dma_count_rd <= 32'h00000000;
       HADDR_R <= 32'h00000000;
     end else begin
       if (dma_start) begin
-        valid_w <= 1'b0;
         dma_count_rd <= reg_length;
         HADDR_R <= reg_rd_addr;
-      end else if (dma_count_rd != 32'h00000000 && state_q == STATE_READ) begin
-        valid_w <= 1'b1;
+      end else if (dma_count_rd != 32'h00000000) begin
         dma_count_rd <= dma_count_rd - 1'b1;
         HADDR_R <= HADDR_R + reg_step;
       end else begin
-        valid_w <= 1'b0;
-        dma_count_rd <= dma_count_rd;
-        HADDR_R <= HADDR_R;
+        dma_count_rd <= 32'h00000000;
+        HADDR_R <= 32'h00000000;
       end
     end
   end
@@ -202,50 +169,39 @@ module dma (
 
   always @(posedge clk_i or negedge rst_i) begin
     if (~rst_i) begin
-      // valid_r <= 1'b0;
       dma_count_wr <= 32'h00000000;
     end else begin
       if (dma_start_wr) begin
-        // valid_r <= 1'b0;
-        dma_count_wr <= reg_length - 1;
-      end else if (dma_count_wr != 32'h00000000 && state_q == STATE_WRITE) begin
-        // valid_r <= 1'b1;
+        dma_count_wr <= reg_length;
+      end else if (dma_count_wr != 32'h00000000) begin
         dma_count_wr <= dma_count_wr - 1'b1;
       end else begin
-        // valid_r <= 1'b0;
         dma_count_wr <= dma_count_wr;
       end
     end
   end
 
-  reg [31:0] wr_addr;
   always @(posedge clk_i or negedge rst_i) begin
     if (~rst_i) begin
-      // WEN_W   <= 4'b0000;
-      wr_addr <= 32'h0;
+      WEN_W <= 4'b0000;
+      HADDR_W <= 32'h0;
+      HWDATA_W <= 32'h0;
     end else begin
       if (dma_start_wr) begin
-        // WEN_W   <= 4'b1111;
-        wr_addr <= reg_wr_addr;
-      end else if (dma_count_wr != 32'h00000000 && state_q == STATE_WRITE) begin
-        // WEN_W   <= 4'b1111;
-        wr_addr <= wr_addr + reg_step;
+        WEN_W <= 4'b1111;
+        HADDR_W <= reg_wr_addr;
+        HWDATA_W <= 32'h0;
+      end else if (dma_count_wr != 32'h00000000) begin
+        WEN_W <= 4'b1111;
+        HADDR_W <= HADDR_W + reg_step;
+        HWDATA_W <= buf_rdata;
       end else begin
-        // WEN_W   <= 4'b0000;
-        wr_addr <= wr_addr;
+        WEN_W <= 4'b0000;
+        HADDR_W <= 32'h0;
+        HWDATA_W <= 32'h0;
       end
     end
   end
-  always @* begin
-    WEN_W   = state_q[2] ? 4'hf : 4'h0;
-    valid_r = state_q[2];
-  end
-  assign HWDATA_W = fifo_data_o;
-
-  // always @(posedge clk_i or negedge rst_i)
-  //   if (!rst_i) HADDR_W <= 32'h0;
-  //   else HADDR_W <= wr_addr;
-  always @* HADDR_W = wr_addr;
 
   always @* begin
     case (HADDR_W[11:10])
@@ -258,7 +214,5 @@ module dma (
 
   // assign HWDATA_W = fifo_wr_data;
   assign dma_rdata_i = {32{1'b0}};
-  assign READ = state_q[1];
-  assign WRITE = state_q[2];
 
 endmodule

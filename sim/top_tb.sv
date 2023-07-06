@@ -9,6 +9,7 @@ module debug_tb;
   parameter GPIO_ADDRESS = 32'hf0000000;
   parameter STS_ADDRESS = 32'hf0000004;
 
+  parameter DMA_idx = 78;
 
   initial begin
     clk_i = 0;
@@ -21,27 +22,56 @@ module debug_tb;
   integer file;
   initial begin
     data[0] = 8'h10;
-    data[1] = 13;
+    data[1] = 72;
     data[2] = 0;
     data[3] = 0;
     data[4] = 0;
-    data[5] = 1;
+    data[5] = 0;
 
 
 
-    $readmemh("/home/hank/workspace/vivado/CM3/cm3_dma/debug/soc.hex", data_hex);
-    for (int i = 6; i < 1024; i++) begin
-      data[i] = ((i-6)%4 == 0) ? data_hex[(i-6)/4][31:24] :
-        (((i-6)%4 == 1) ? data_hex[(i-6)/4][23:16] :
-        (((i-6)%4 == 2) ? data_hex[(i-6)/4][15:8] : data_hex[(i-6)/4][7:0]));
+    $readmemh("/home/hank/workspace/repos/csram_control/sim/soc.hex", data_hex);
+    for (int i = 6; i < DMA_idx+1; i++) begin
+      data[i] = ((i-6)%4 == 0) ? data_hex[(i-6)/4][7:0] :
+        (((i-6)%4 == 1) ? data_hex[(i-6)/4][15:8] :
+        (((i-6)%4 == 2) ? data_hex[(i-6)/4][23:16] : data_hex[(i-6)/4][31:24]));
     end
 
-    data[21] = 8'h11;
-    data[22] = 13;
-    data[23] = 0;
-    data[24] = 0;
-    data[25] = 0;
-    data[26] = 0;
+    // address high to low , [31:24] -> [7:0]
+    // data    low to high , [7:0] -> [31:24];
+
+    data[DMA_idx+1] = 8'h10;
+    data[DMA_idx+2] = 20;
+    data[DMA_idx+3] = 8'hf0;
+    data[DMA_idx+4] = 0;
+    data[DMA_idx+5] = 0;
+    data[DMA_idx+6] = 0;
+
+    data[DMA_idx+7] = 0;
+    data[DMA_idx+8] = 0;
+    data[DMA_idx+9] = 0;
+    data[DMA_idx+10] = 0;
+
+    data[DMA_idx+11] = 0;
+    data[DMA_idx+12] = 1;
+    data[DMA_idx+13] = 0;
+    data[DMA_idx+14] = 0;
+
+    data[DMA_idx+15] = 17;
+    data[DMA_idx+16] = 0;
+    data[DMA_idx+17] = 0;
+    data[DMA_idx+18] = 0;
+
+    data[DMA_idx+19] = 1;
+    data[DMA_idx+20] = 0;
+    data[DMA_idx+21] = 0;
+    data[DMA_idx+22] = 0;
+
+    data[DMA_idx+23] = 1;
+    data[DMA_idx+24] = 0;
+    data[DMA_idx+25] = 0;
+    data[DMA_idx+26] = 0;
+
   end
 
   logic [6:0] count = 0;

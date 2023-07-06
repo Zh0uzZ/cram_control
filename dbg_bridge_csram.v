@@ -5,7 +5,8 @@ module dbg_bridge_csram
 #(
     parameter CLK_FREQ    = 14745600,
     parameter UART_SPEED  = 115200,
-    parameter STS_ADDRESS = 32'hf0000004
+    parameter STS_ADDRESS = 32'he0000004,
+    parameter DMA_ADDRESS = 32'hf0000000
 )
 //-----------------------------------------------------------------
 // Ports
@@ -18,21 +19,21 @@ module dbg_bridge_csram
     input wire [31:0] csram_q,
 
     // Outputs
-    output wire        csram_dbg_en,  //csram debug enable signal
-    output reg         csram_cen,     //csram cs select signal
-    output wire        uart_txd_o,
+    output wire csram_dbg_en,  //csram debug enable signal
+    output reg [3:0] csram_cen,     //csram cs select signal
+    output wire uart_txd_o,
 
     //dma control
-    output wire [31:0] dma_addr,
-    output wire        dma_write,
+    output reg  [31:0] dma_addr,
+    output reg         dma_write,
     output wire [31:0] dma_wdata,
-    output wire [31:0] dma_rdata,
+    input  wire [31:0] dma_rdata,
 
     //csram control
-    output reg  [31:0] csram_addr,    //csram write/read address
-    output wire [31:0] csram_d,       //csram write data
-    output wire [31:0] csram_i,       //csram write instruction
-    output wire [ 3:0] csram_wen      //csram write enable mask
+    output reg  [31:0] csram_addr,  //csram write/read address
+    output wire [31:0] csram_d,     //csram write data
+    output wire [31:0] csram_i,     //csram write instruction
+    output wire [ 3:0] csram_wen    //csram write enable mask
 );
 
   //-----------------------------------------------------------------
@@ -90,7 +91,10 @@ module dbg_bridge_csram
   // Word storage
   reg  [31:0] data_q;
 
-  wire        magic_addr_w = (mem_addr_q == STS_ADDRESS);
+  wire        dbg_id_addr_w = (mem_addr_q == STS_ADDRESS);
+  wire        csram_addr_w = (mem_addr_q[31:28] == 4'h0);
+  wire        dma_addr_w = (mem_addr_q[31:28] == 4'hf);
+  wire        addr_w = 0;
 
   //-----------------------------------------------------------------
   // UART core
@@ -223,7 +227,7 @@ module dbg_bridge_csram
       // STATE_WRITE
       //-----------------------------------------
       STATE_WRITE: begin
-        if (len_q == 8'b0 || magic_addr_w) next_state_r = STATE_IDLE;
+        if (len_q == 8'b0 || dbg_id_addr_w) next_state_r = STATE_IDLE;
         else next_state_r = STATE_WRITE;
       end
       //-----------------------------------------
@@ -290,7 +294,7 @@ module dbg_bridge_csram
     if (!rst_i) len_q <= 8'd0;
     else if (state_q == STATE_LEN && rx_valid_w) len_q[7:0] <= rx_data_w;
     else if (state_q == STATE_WRITE && rx_valid_w) len_q <= len_q - 8'd1;
-    else if ((state_q == STATE_READ && read_bits == 2'b10) && magic_addr_w) len_q <= len_q - 8'd1;
+    else if ((state_q == STATE_READ && read_bits == 2'b10) && dbg_id_addr_w) len_q <= len_q - 8'd1;
     else if (((state_q == STATE_DATA0) || (state_q == STATE_DATA1) || (state_q == STATE_DATA2)) && (tx_accept_w && !read_skip_w))
       len_q <= len_q - 8'd1;
 
@@ -305,8 +309,8 @@ module dbg_bridge_csram
     else if (state_q == STATE_ADDR3 && rx_valid_w) mem_addr_q[7:0] <= rx_data_w;
     // Address increment on every access issued
     else if (state_q == STATE_WRITE && rx_valid_w && data_idx_q == 2'b11)
-      mem_addr_q <= {mem_addr_q[31:2], 2'b00} + 'd4;
-    else if (state_q == STATE_READ && read_bits[0]) mem_addr_q <= {mem_addr_q[31:2], 2'b00} + 'd4;
+      mem_addr_q <= {mem_addr_q[31:0]} + 'd1;
+    else if (state_q == STATE_READ && read_bits[0]) mem_addr_q <= {mem_addr_q[31:0]} + 'd1;
 
   //-----------------------------------------------------------------
   // Data Index 只有write时有效
@@ -334,7 +338,7 @@ module dbg_bridge_csram
         2'd3: data_q[31:24] <= rx_data_w;
       endcase
     end  // Read from status register?
-    else if (state_q == STATE_READ && mem_addr_q == STS_ADDRESS)
+    else if (state_q == STATE_READ && dbg_id_addr_w)
       data_q <= {16'hcafe, 16'd0};
     // Read from memory
     else if (state_q == STATE_READ && read_bits == 'b10) data_q <= csram_q;
@@ -345,29 +349,35 @@ module dbg_bridge_csram
   assign tx_data_w = data_q[7:0];
 
 
-  reg [1:0] cs_reg;
-  always @(posedge clk_i or negedge rst_i) begin
-    if (!rst_i) cs_reg <= 2'b10;
-    else begin
-      if (!cs_reg[1]) cs_reg <= cs_reg + 'b1;
-    end
-  end
+
 
   // cs signal
   always @(posedge clk_i or negedge rst_i) begin
     if (!rst_i) begin
-      csram_cen <= 1'b0;
+      csram_cen <= 4'h0;
     end  // Address increment on every access issued
-    else if (state_q == STATE_WRITE && rx_valid_w && (data_idx_q == 2'b11 || len_q == 'd1)) begin
-      csram_cen <= 1'b1;
-    end else if (state_q == STATE_READ && read_bits == 'b00) begin
-      csram_cen <= 1'b1;
+    else if (csram_addr_w && state_q == STATE_WRITE && rx_valid_w && (data_idx_q == 2'b11 || len_q == 'd1)) begin
+      case (mem_addr_q[11:10])
+        2'b00:   csram_cen <= 4'b0001;
+        2'b01:   csram_cen <= 4'b0010;
+        2'b10:   csram_cen <= 4'b0100;
+        2'b11:   csram_cen <= 4'b1000;
+        default: csram_cen <= 4'b0000;
+      endcase
+    end else if (csram_addr_w && state_q == STATE_READ && read_bits == 'b00) begin
+      case (mem_addr_q[11:10])
+        2'b00:   csram_cen <= 4'b0001;
+        2'b01:   csram_cen <= 4'b0010;
+        2'b10:   csram_cen <= 4'b0100;
+        2'b11:   csram_cen <= 4'b1000;
+        default: csram_cen <= 4'b0000;
+      endcase
     end else begin
-      csram_cen <= 1'b0;
+      csram_cen <= 4'b0000;
     end
   end
 
-
+  // csram write signals
   // addr nend 2 clock to delay
   reg [31:0] addr_q1, addr_q2;
   always @(posedge clk_i or negedge rst_i) begin
@@ -376,49 +386,79 @@ module dbg_bridge_csram
       addr_q2 <= 32'h00000000;
       csram_addr <= 32'h00000000;
     end else begin
-      addr_q1 <= {mem_addr_q[31:2], 2'b00};
+      addr_q1 <= {mem_addr_q[31:0]};
       addr_q2 <= addr_q1;
-      if (state_q == STATE_WRITE) csram_addr <= addr_q2;
-      else if (state_q == STATE_READ && read_bits[0] == 'b0)
-        csram_addr <= {mem_addr_q[31:2], 2'b00};
+      if (csram_addr_w && state_q == STATE_WRITE) csram_addr <= addr_q2;
+      else if (csram_addr_w && state_q == STATE_READ && read_bits[0] == 'b0)
+        csram_addr <= {mem_addr_q[31:0]};
+      else csram_addr <= 32'h00000000;
     end
   end
-  assign csram_d = data_q;
+  assign csram_d = csram_addr_w ? data_q : 32'h00000000;
 
 
   //-----------------------------------------------------------------
-  // Write mask
+  //csram write mask
   //-----------------------------------------------------------------
-  reg [3:0] mem_sel_q;
-  reg [3:0] mem_sel_r;
+  // reg [3:0] mem_sel_q;
+  // reg [3:0] mem_sel_r;
 
-  always @* begin
-    mem_sel_r = 4'b1111;
+  // always @* begin
+  //   mem_sel_r = 4'b1111;
 
-    case (data_idx_q)
-      2'd0: mem_sel_r = 4'b0001;
-      2'd1: mem_sel_r = 4'b0011;
-      2'd2: mem_sel_r = 4'b0111;
-      2'd3: mem_sel_r = 4'b1111;
-    endcase
+  //   case (data_idx_q)
+  //     2'd0: mem_sel_r = 4'b0001;
+  //     2'd1: mem_sel_r = 4'b0011;
+  //     2'd2: mem_sel_r = 4'b0111;
+  //     2'd3: mem_sel_r = 4'b1111;
+  //   endcase
 
-    case (mem_addr_q[1:0])
-      2'd0: mem_sel_r = mem_sel_r & 4'b1111;
-      2'd1: mem_sel_r = mem_sel_r & 4'b1110;
-      2'd2: mem_sel_r = mem_sel_r & 4'b1100;
-      2'd3: mem_sel_r = mem_sel_r & 4'b1000;
-    endcase
+  //   case (mem_addr_q[1:0])
+  //     2'd0: mem_sel_r = mem_sel_r & 4'b1111;
+  //     2'd1: mem_sel_r = mem_sel_r & 4'b1110;
+  //     2'd2: mem_sel_r = mem_sel_r & 4'b1100;
+  //     2'd3: mem_sel_r = mem_sel_r & 4'b1000;
+  //   endcase
+  // end
+
+  // always @(posedge clk_i or negedge rst_i)
+  //   if (!rst_i) mem_sel_q <= 4'b0;
+  //   // Idle - reset for read requests
+  //   else if (state_q == STATE_IDLE) mem_sel_q <= 4'b1111;
+  //   // Every 4th byte, issue bus access
+  //   else if (state_q == STATE_WRITE && rx_valid_w && (data_idx_q == 2'd3 || len_q == 8'd1))
+  //     mem_sel_q <= mem_sel_r;
+
+  assign csram_wen = (csram_addr_w && state_q == STATE_WRITE) ? 'b1111 : 'b0000;
+
+
+  //dma write signals
+  // addr nend 2 clock to delay
+  reg [31:0] addr_q1, addr_q2;
+  always @(posedge clk_i or negedge rst_i) begin
+    if (!rst_i) begin
+      dma_addr <= 32'h00000000;
+    end else begin
+      if (dma_addr_w && state_q == STATE_WRITE) dma_addr <= addr_q2;
+      else if (dma_addr_w && state_q == STATE_READ && read_bits[0] == 'b0)
+        dma_addr <= {mem_addr_q[31:0]};
+      else dma_addr <= 32'h00000000;
+    end
+  end
+  assign dma_wdata = dma_addr_w ? data_q : 32'h00000000;
+
+  always @(posedge clk_i or negedge rst_i) begin
+    if (!rst_i) begin
+      dma_write <= 1'h0;
+    end  // Address increment on every access issued
+    else if (dma_addr_w && state_q == STATE_WRITE && rx_valid_w && (data_idx_q == 2'b11 || len_q == 'd1)) begin
+      dma_write <= 1'b1;
+    end else begin
+      dma_write <= 1'b0;
+    end
   end
 
-  always @(posedge clk_i or negedge rst_i)
-    if (!rst_i) mem_sel_q <= 4'b0;
-    // Idle - reset for read requests
-    else if (state_q == STATE_IDLE) mem_sel_q <= 4'b1111;
-    // Every 4th byte, issue bus access
-    else if (state_q == STATE_WRITE && rx_valid_w && (data_idx_q == 2'd3 || len_q == 8'd1))
-      mem_sel_q <= mem_sel_r;
 
-  assign csram_wen = (state_q == STATE_WRITE) ? mem_sel_q : 'b0000;
 
   //-----------------------------------------------------------------
   // Write enable
@@ -427,7 +467,7 @@ module dbg_bridge_csram
     if (!rst_i) mem_wr_q <= 1'b0;
     else if (state_q == STATE_IDLE && rx_valid_w) mem_wr_q <= (rx_data_w == REQ_WRITE);
 
-  assign csram_dbg_en = (state_q == STATE_WRITE | state_q == STATE_READ);
+  assign csram_dbg_en = !(state_q == STATE_IDLE);
 
 
 endmodule
